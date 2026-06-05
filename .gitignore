@@ -1,0 +1,7 @@
+data/liar_dataset/
+data/fakenewsnet/
+data/glove.6B.300d.txt
+results/
+__pycache__/
+*.pt
+*.pyc
