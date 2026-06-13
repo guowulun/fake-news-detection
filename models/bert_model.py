@@ -1,18 +1,3 @@
-"""
-BERT-based classifier for fake news detection.
-
-Architecture:
-  bert-base-uncased (pretrained)
-  → [CLS] token representation
-  → Dropout(0.1)
-  → Linear(768 → 2)
-
-Fine-tuning strategy:
-  - Freeze bottom N layers (optional, default: fine-tune all)
-  - AdamW optimizer with linear warmup scheduler
-  - Gradient clipping (max_norm=1.0)
-"""
-
 import torch
 import torch.nn as nn
 from transformers import BertModel, BertConfig

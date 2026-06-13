@@ -1,12 +1,3 @@
-"""
-models/lstm_model.py
-BiLSTM + Additive Attention classifier for fake-news detection.
-
-Drop-in replacement for the original BiLSTM-only file.
-The public API (FakeNewsLSTM, build_model) is unchanged so train_lstm.py
-and compare_models.py require zero edits.
-"""
-
 import torch
 import torch.nn as nn
 import torch.nn.functional as F

@@ -1,10 +1,3 @@
-"""
-tests/test_attention.py
-───────────────────────
-Quick sanity-checks for AdditiveAttention and FakeNewsLSTM.
-Run:  python -m pytest tests/test_attention.py -v
-"""
-
 import math
 import pytest
 import torch

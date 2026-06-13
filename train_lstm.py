@@ -1,12 +1,4 @@
 """
-train_lstm.py  –  BiLSTM + Attention training entry point.
-
-Changes vs. original:
-  • Passes use_attention=True to build_model (default, backward-compatible).
-  • After evaluation, optionally dumps a JSON of per-sample attention weights
-    (--save_attention flag) so you can inspect which tokens drove predictions.
-  • Everything else (CLI, data loading, trainer loop) is identical.
-
 Usage
 -----
 python train_lstm.py \
@@ -25,13 +17,21 @@ import json
 import os
 
 import torch
+import torch.nn as nn
 from torch.utils.data import DataLoader
 
-# ── project imports (unchanged paths) ────────────────────────────────────────
-from data.dataset import load_liar, load_fakenewsnet, FakeNewsDataset
-from data.vocab   import Vocabulary
+# ── project imports (fixed) ───────────────────────────────────────────────────
+from data.dataset import load_combined, get_split, print_stats, LSTMDataset
+from data.vocab   import build_vocab, load_glove
 from models.lstm_model import build_model
-from utils.trainer     import Trainer
+from utils.trainer import (
+    get_device,
+    lstm_train_epoch,
+    lstm_eval_epoch,
+    print_metrics,
+    full_report,
+    EarlyStopping,
+)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -48,8 +48,8 @@ def parse_args():
     p.add_argument("--num_layers",     type=int,   default=2)
     p.add_argument("--dropout",        type=float, default=0.3)
     p.add_argument("--max_len",        type=int,   default=128)
+    p.add_argument("--patience",       type=int,   default=5)
     p.add_argument("--output",         default="results/lstm")
-    # ── new flag ──────────────────────────────────────────────────────────
     p.add_argument("--no_attention",   action="store_true",
                    help="Disable attention (fall back to mean-pooling).")
     p.add_argument("--save_attention", action="store_true",
@@ -66,13 +66,14 @@ def dump_attention_weights(model, loader, vocab, device, out_path: str):
     """
     model.eval()
     records = []
-    idx2word = {v: k for k, v in vocab.token2idx.items()}
+    # FIX: vocab là dict {word: idx}, đảo ngược để idx -> word
+    idx2word = {v: k for k, v in vocab.items()}
 
     with torch.no_grad():
-        for batch in loader:
-            ids    = batch["input_ids"].to(device)
+        for input_ids, labels in loader:
+            ids = input_ids.to(device)
             logits, attn = model(ids, return_attention=True)   # (B,C), (B,T)
-            preds  = logits.argmax(dim=-1).cpu().tolist()
+            preds = logits.argmax(dim=-1).cpu().tolist()
 
             for i in range(ids.size(0)):
                 tokens  = [idx2word.get(t.item(), "<unk>") for t in ids[i]]
@@ -90,55 +91,135 @@ def dump_attention_weights(model, loader, vocab, device, out_path: str):
 
 def main():
     args   = parse_args()
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = get_device()
     os.makedirs(args.output, exist_ok=True)
 
     # ── Data ─────────────────────────────────────────────────────────────────
-    liar_train, liar_val, liar_test = load_liar(args.liar_dir)
-    fnn_train,  fnn_val,  fnn_test  = load_fakenewsnet(args.fnn_dir)
+    # FIX: load_liar/load_fakenewsnet trả về DataFrame, không phải tuples.
+    # Dùng load_combined() + get_split() cho đúng API.
+    print("\n[1] Loading datasets...")
+    df = load_combined(args.liar_dir, args.fnn_dir)
+    print_stats(df)
 
-    train_raw = liar_train + fnn_train
-    val_raw   = liar_val   + fnn_val
-    test_raw  = liar_test  + fnn_test
+    train_df = get_split(df, "train")
+    val_df   = get_split(df, "valid")
+    test_df  = get_split(df, "test")
+
+    train_texts  = train_df["text"].tolist()
+    train_labels = train_df["binary_label"].tolist()
+    val_texts    = val_df["text"].tolist()
+    val_labels   = val_df["binary_label"].tolist()
+    test_texts   = test_df["text"].tolist()
+    test_labels  = test_df["binary_label"].tolist()
 
     # ── Vocabulary + GloVe ───────────────────────────────────────────────────
-    vocab  = Vocabulary()
-    vocab.build([text for text, _ in train_raw])
-    glove  = vocab.load_glove(args.glove)           # (vocab_size, embed_dim)
+    # FIX: build_vocab() và load_glove() là functions, không phải class Vocabulary
+    print("\n[2] Building vocabulary...")
+    vocab = build_vocab(train_texts)                      # dict {word: idx}
+
+    print(f"\n[3] Loading GloVe: {args.glove}...")
+    glove_matrix = load_glove(args.glove, vocab)          # numpy (vocab_size, embed_dim)
+    embed_dim    = glove_matrix.shape[1]
 
     # ── Datasets / Loaders ───────────────────────────────────────────────────
-    mk_ds  = lambda data: FakeNewsDataset(data, vocab, args.max_len)
-    train_loader = DataLoader(mk_ds(train_raw), args.batch_size, shuffle=True)
-    val_loader   = DataLoader(mk_ds(val_raw),   args.batch_size)
-    test_loader  = DataLoader(mk_ds(test_raw),  args.batch_size)
+    # FIX: LSTMDataset thay vì FakeNewsDataset (tên không tồn tại)
+    print("\n[4] Creating datasets...")
+    train_ds = LSTMDataset(train_texts, train_labels, vocab, args.max_len)
+    val_ds   = LSTMDataset(val_texts,   val_labels,   vocab, args.max_len)
+    test_ds  = LSTMDataset(test_texts,  test_labels,  vocab, args.max_len)
+
+    train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True,  num_workers=2)
+    val_loader   = DataLoader(val_ds,   batch_size=args.batch_size, shuffle=False, num_workers=2)
+    test_loader  = DataLoader(test_ds,  batch_size=args.batch_size, shuffle=False, num_workers=2)
 
     # ── Model ────────────────────────────────────────────────────────────────
-    use_attention = not args.no_attention          # True by default
+    use_attention = not args.no_attention
+    print(f"\n[5] Building model: BiLSTM {'+ Attention' if use_attention else '(mean-pool)'}...")
     model = build_model(
         vocab_size    = len(vocab),
-        embed_dim     = glove.shape[1],
+        embed_dim     = embed_dim,
         hidden_dim    = args.hidden_dim,
         num_layers    = args.num_layers,
         dropout       = args.dropout,
         use_attention = use_attention,
     ).to(device)
-    model.load_pretrained_embeddings(glove)
 
-    print(f"Model  : BiLSTM {'+ Attention' if use_attention else '(mean-pool)'}")
-    print(f"Params : {sum(p.numel() for p in model.parameters() if p.requires_grad):,}")
+    # FIX: load_pretrained_embeddings nhận torch.Tensor, không phải numpy array
+    model.load_pretrained_embeddings(torch.tensor(glove_matrix))
 
-    # ── Train ─────────────────────────────────────────────────────────────────
-    trainer = Trainer(model, device=device, lr=args.lr, output_dir=args.output)
-    trainer.train(train_loader, val_loader, epochs=args.epochs)
+    trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    print(f"    Trainable params: {trainable:,}")
 
-    # ── Evaluate ──────────────────────────────────────────────────────────────
-    results = trainer.evaluate(test_loader)
+    # ── Optimizer & loss ──────────────────────────────────────────────────────
+    optimizer  = torch.optim.Adam(model.parameters(), lr=args.lr)
+    criterion  = nn.CrossEntropyLoss()
+    early_stop = EarlyStopping(patience=args.patience, mode="max")
+
+    best_f1 = 0.0
+    history = []
+
+    # ── Training loop ─────────────────────────────────────────────────────────
+    # FIX: dùng lstm_train_epoch/lstm_eval_epoch từ utils.trainer
+    # thay vì class Trainer (không tồn tại)
+    print(f"\n[6] Training ({args.epochs} epochs)...\n")
+    for epoch in range(1, args.epochs + 1):
+        train_loss, train_m = lstm_train_epoch(model, train_loader, optimizer, criterion, device)
+        val_loss,   val_m   = lstm_eval_epoch(model, val_loader, criterion, device)
+        early_stop.step(val_m["f1_macro"])
+
+        print(f"Epoch {epoch:02d}  train_loss={train_loss:.4f}  val_loss={val_loss:.4f}")
+        print_metrics(train_m, "Train")
+        print_metrics(val_m,   "Val  ")
+
+        history.append({
+            "epoch": epoch,
+            "train_loss": train_loss,
+            "val_loss":   val_loss,
+            **{f"val_{k}": v for k, v in val_m.items()},
+        })
+
+        if val_m["f1_macro"] > best_f1:
+            best_f1 = val_m["f1_macro"]
+            torch.save(model.state_dict(), os.path.join(args.output, "best_lstm.pt"))
+            print(f"    ★ Saved best model (F1={best_f1:.4f})")
+
+        if early_stop.stop:
+            print(f"\nEarly stopping at epoch {epoch}.")
+            break
+        print()
+
+    # ── Test evaluation ───────────────────────────────────────────────────────
+    print("\n[7] Test evaluation...")
+    model.load_state_dict(
+        torch.load(os.path.join(args.output, "best_lstm.pt"), map_location=device)
+    )
+    test_loss, test_m = lstm_eval_epoch(model, test_loader, criterion, device)
+    print_metrics(test_m, "Test")
+
+    # Full report + confusion matrix
+    model.eval()
+    all_preds, all_labels_list = [], []
+    with torch.no_grad():
+        for input_ids, labels in test_loader:
+            logits = model(input_ids.to(device))
+            all_preds.extend(logits.argmax(-1).cpu().numpy())
+            all_labels_list.extend(labels.numpy())
+
+    full_report(all_labels_list, all_preds)
+
+    # ── Save results ──────────────────────────────────────────────────────────
+    results = {
+        "model": "BiLSTM" + (" + Attention" if use_attention else " (mean-pool)"),
+        "test_metrics": test_m,
+        "history": history,
+        "args": vars(args),
+    }
     results_path = os.path.join(args.output, "lstm_results.json")
     with open(results_path, "w") as f:
         json.dump(results, f, indent=2)
-    print(f"Test results → {results_path}")
+    print(f"\nResults saved → {results_path}")
 
-    # ── (Optional) dump attention weights ────────────────────────────────────
+    # ── (Optional) dump attention weights ─────────────────────────────────────
     if args.save_attention and use_attention:
         attn_path = os.path.join(args.output, "attention_weights.json")
         dump_attention_weights(model, test_loader, vocab, device, attn_path)

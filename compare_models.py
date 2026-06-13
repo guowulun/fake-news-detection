@@ -1,6 +1,4 @@
 """
-Compare LSTM vs BERT results and generate plots.
-
 Usage:
     python compare_models.py \
         --lstm_results results/lstm/lstm_results.json \

@@ -1,8 +1,4 @@
 """
-utils/visualize_attention.py
-────────────────────────────
-Helpers to inspect and plot attention weights produced by FakeNewsLSTM.
-
 Usage (after training with --save_attention):
     python -m utils.visualize_attention \
         --weights results/lstm/attention_weights.json \

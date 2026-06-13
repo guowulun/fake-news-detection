@@ -1,7 +1,3 @@
-"""
-Vocabulary builder and GloVe embedding loader for LSTM baseline.
-"""
-
 import os
 import numpy as np
 from collections import Counter

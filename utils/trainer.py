@@ -1,8 +1,3 @@
-"""
-Training loop, evaluation, and metrics utilities.
-Works for both LSTM and BERT models.
-"""
-
 import time
 import torch
 import torch.nn as nn

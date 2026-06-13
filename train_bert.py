@@ -1,6 +1,4 @@
 """
-Fine-tune BERT on LIAR + FakeNewsNet for fake news detection.
-
 Usage:
     python train_bert.py \
         --liar_dir   data/liar_dataset \

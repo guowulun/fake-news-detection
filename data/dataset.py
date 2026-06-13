@@ -1,10 +1,3 @@
-"""
-Data loading & preprocessing for LIAR and FakeNewsNet datasets.
-
-LIAR: https://www.cs.ucsb.edu/~william/data/liar_dataset.zip
-FakeNewsNet: https://github.com/KaiDMML/FakeNewsNet
-"""
-
 import os
 import re
 import pandas as pd
