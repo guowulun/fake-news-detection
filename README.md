@@ -149,3 +149,4 @@ headlines. Increase to 256 or 512 for article-level inputs (higher VRAM cost).
 
 **Optimizer**: LSTM uses Adam with ReduceLROnPlateau. BERT uses AdamW with
 linear warmup — important for stable transformer fine-tuning.
+# fake-news-detection
